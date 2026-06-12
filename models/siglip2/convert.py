@@ -153,7 +153,7 @@ def parity_and_fixtures(image_tower, text_tower, tokenizer, image_path, text_pat
     return worst
 
 
-def palettize(path, nbits):
+def palettize(path, nbits, granularity):
     from coremltools.optimize.coreml import (
         OpPalettizerConfig,
         OptimizationConfig,
@@ -161,10 +161,11 @@ def palettize(path, nbits):
     )
     import coremltools.models
 
+    # Image tower needs per-grouped-channel to pass parity; the text tower passes
+    # per-tensor, and grouped kmeans on its 256k-vocab embedding table never finishes.
+    kwargs = {"granularity": "per_grouped_channel", "group_size": 16} if granularity == "grouped" else {}
     mlmodel = coremltools.models.MLModel(str(path))
-    config = OptimizationConfig(global_config=OpPalettizerConfig(
-        mode="kmeans", nbits=nbits, granularity="per_grouped_channel", group_size=16,
-    ))
+    config = OptimizationConfig(global_config=OpPalettizerConfig(mode="kmeans", nbits=nbits, **kwargs))
     palettize_weights(mlmodel, config).save(str(path))
 
 
@@ -218,8 +219,8 @@ def main():
 
     if args.palettize_bits:
         print(f"Palettizing weights to {args.palettize_bits} bits ...")
-        palettize(image_path, args.palettize_bits)
-        palettize(text_path, args.palettize_bits)
+        palettize(image_path, args.palettize_bits, granularity="grouped")
+        palettize(text_path, args.palettize_bits, granularity="per_tensor")
 
     print("Parity check ...")
     worst = parity_and_fixtures(image_tower, text_tower, tokenizer, image_path, text_path, image_size, out_dir)
