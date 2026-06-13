@@ -214,13 +214,22 @@ final class SearchIndexCoordinator {
     }
 
     func schedule(_ asset: MediaAsset) {
-        guard enabled, let model else { return }
-        guard asset.type == .video || asset.type == .image, !asset.isGenerating else { return }
+        guard enabled, let model, !asset.isGenerating else { return }
         guard !queue.contains(asset.id), !failedIds.contains(asset.id) else { return }
-        guard AssetIndexer.needsIndex(url: asset.url, spec: model.spec) else { return }
+        let needsVisual = (asset.type == .video || asset.type == .image)
+            && AssetIndexer.needsIndex(url: asset.url, spec: model.spec)
+        guard needsVisual || needsTranscript(asset) else { return }
         queue.append(asset.id)
         batchTotal += 1
         ensureWorker()
+    }
+
+    static func wantsTranscript(_ asset: MediaAsset) -> Bool {
+        asset.type == .audio || (asset.type == .video && asset.hasAudio)
+    }
+
+    private func needsTranscript(_ asset: MediaAsset) -> Bool {
+        Self.wantsTranscript(asset) && !TranscriptCache.hasCachedOnDisk(for: asset.url)
     }
 
     // MARK: - Worker
@@ -262,18 +271,39 @@ final class SearchIndexCoordinator {
     private func indexOne(_ asset: MediaAsset) async {
         defer { batchCompleted += 1 }
         guard let model else { return }
+        let transcribe = needsTranscript(asset)
+        let visualShare = transcribe ? 0.5 : 1.0
         let onProgress: @Sendable (Double) -> Void = { [weak self] fraction in
-            Task { @MainActor [weak self] in self?.currentAssetFraction = fraction }
+            Task { @MainActor [weak self] in self?.currentAssetFraction = fraction * visualShare }
         }
+        let url = asset.url
+        let isVideo = asset.type == .video
+        let start = ContinuousClock.now
         do {
-            if asset.type == .image {
-                try await AssetIndexer.indexImage(url: asset.url, model: model)
-            } else {
+            async let transcriptDone: Void = {
+                guard transcribe else { return }
+                try await SearchIndexCoordinator.waitWhileExportActive()
+                _ = try await TranscriptCache.shared.transcript(for: url, isVideo: isVideo, range: nil)
+            }()
+            switch asset.type {
+            case .image:
+                try await AssetIndexer.indexImage(url: url, model: model)
+            case .video:
                 try await AssetIndexer.index(
-                    url: asset.url, duration: asset.duration, model: model, progress: onProgress
+                    url: url, duration: asset.duration, model: model, progress: onProgress
                 )
+            default:
+                break
             }
             loadedIndexes[asset.id] = nil
+            let visualSeconds = start.duration(to: .now).seconds
+            currentAssetFraction = visualShare
+            try await transcriptDone
+            let totalSeconds = start.duration(to: .now).seconds
+            Log.search.notice("""
+                indexed \(asset.id.prefix(8)) visual=\(String(format: "%.1f", visualSeconds))s \
+                total=\(String(format: "%.1f", totalSeconds))s transcribed=\(transcribe)
+                """)
         } catch is CancellationError {
         } catch {
             failedIds.insert(asset.id)
@@ -315,4 +345,8 @@ final class SearchIndexCoordinator {
         loadedIndexes.merge(loaded) { _, new in new }
         return hits
     }
+}
+
+private extension Duration {
+    var seconds: Double { Double(components.seconds) + Double(components.attoseconds) / 1e18 }
 }

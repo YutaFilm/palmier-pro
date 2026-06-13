@@ -9,7 +9,7 @@ extension MediaTab {
             statusButton(icon: "sparkle.magnifyingglass", label: "Enable smart search") {
                 search.downloadModel()
             }
-            .help("Downloads a \(modelSizeLabel) on-device model so you can search media by what's on screen.")
+            .help("Downloads a \(modelSizeLabel) on-device model so you can search media.")
         case .downloading(let fraction):
             statusIndicator("Downloading \(Int(fraction * 100))%",
                             help: "Downloading the on-device model that powers smart search.",
@@ -18,7 +18,7 @@ extension MediaTab {
             statusIndicator("Preparing…", help: "Getting the search model ready.")
         case .ready where search.indexingActive:
             statusIndicator("Indexing \(min(search.batchCompleted + 1, search.batchTotal))/\(search.batchTotal)",
-                            help: "Analyzing media so you can search it by what's on screen.",
+                            help: "Analyzing media so you can search it.",
                             progress: search.indexingProgress)
         case .failed where search.enabled:
             statusButton(icon: "exclamationmark.triangle", label: "Retry") { search.downloadModel() }

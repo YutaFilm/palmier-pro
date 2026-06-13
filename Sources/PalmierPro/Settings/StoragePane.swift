@@ -56,7 +56,7 @@ struct StoragePane: View {
                     Text("Media search")
                         .font(.system(size: AppTheme.FontSize.md))
                         .foregroundStyle(AppTheme.Text.primaryColor)
-                    Text("Indexes media on import so you can search it by what's on screen. Runs on-device.")
+                    Text("Indexes media on import so you can search it. Runs on-device.")
                         .font(.system(size: AppTheme.FontSize.sm))
                         .foregroundStyle(AppTheme.Text.tertiaryColor)
                         .fixedSize(horizontal: false, vertical: true)

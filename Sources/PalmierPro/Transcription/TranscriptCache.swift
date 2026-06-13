@@ -67,6 +67,11 @@ actor TranscriptCache {
         directory.appendingPathComponent("\(key).json")
     }
 
+    nonisolated static func hasCachedOnDisk(for url: URL) -> Bool {
+        guard let key = key(for: url) else { return false }
+        return FileManager.default.fileExists(atPath: diskURL(key).path)
+    }
+
     /// Disk-only read
     nonisolated static func cachedOnDisk(for url: URL) -> TranscriptionResult? {
         guard let key = key(for: url),
