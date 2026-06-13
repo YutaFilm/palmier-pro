@@ -1,6 +1,5 @@
 import Foundation
 
-/// Spoken search: exact keyword matches rank first, semantic segment matches fill below
 enum SpokenSearch {
     struct Hit: Equatable {
         let assetID: String

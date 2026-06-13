@@ -1,7 +1,6 @@
 import Accelerate
 import Foundation
 
-/// Ranks indexed footage against a query embedding
 enum VisualSearch {
     struct Hit: Equatable {
         let assetID: String
