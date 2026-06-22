@@ -286,6 +286,23 @@ enum EffectRegistry {
                 ])
             }
         ),
+        EffectDescriptor(
+            id: "stylize.glow", displayName: "Glow", category: "Stylize",
+            params: [
+                EffectParamSpec(key: "intensity", label: "Glow", range: 0...1,
+                                defaultValue: 0, unit: ""),
+            ],
+            apply: { image, p, extent in
+                let intensity = p.value("intensity")
+                guard intensity > 0 else { return image }
+                return image.clampedToExtent()
+                    .applyingFilter("CIBloom", parameters: [
+                        kCIInputRadiusKey: 20,
+                        kCIInputIntensityKey: intensity,
+                    ])
+                    .cropped(to: extent)
+            }
+        ),
     ]
 
     static let byId: [String: EffectDescriptor] = Dictionary(

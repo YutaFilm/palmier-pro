@@ -180,6 +180,7 @@ struct EffectRenderingTests {
             "blur.gaussian": ["radius": 30],
             "blur.sharpen": ["amount": 2],
             "stylize.vignette": ["intensity": 2, "radius": 0.5],
+            "stylize.glow": ["intensity": 1],
         ]
 
         func frame(_ effects: [Effect]?) async throws -> [UInt8] {
