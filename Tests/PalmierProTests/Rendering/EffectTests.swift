@@ -74,11 +74,11 @@ struct EffectRenderingTests {
     /// Exposure through the real compositor must measurably brighten/darken frames.
     @Test func exposureChangesRenderedBrightness() async throws {
         let renderSize = CompositorFixtures.renderSize
-        let videoURL = try await CompositorFixtures.patternVideoURL()
-        nonisolated(unsafe) let urls = ["pattern": videoURL]
+        let videoURL = try await CompositorFixtures.midtoneVideoURL()
+        nonisolated(unsafe) let urls = ["midtone": videoURL]
 
         func meanLuma(ev: Double?) async throws -> Double {
-            var clip = CompositorFixtures.patternClip()
+            var clip = CompositorFixtures.midtoneClip()
             if let ev { clip.effects = [Effect.make("color.exposure", ["ev": ev])] }
             let tl = CompositorFixtures.timeline([Fixtures.videoTrack(clips: [clip])])
             let result = try await CompositionBuilder.build(
@@ -101,16 +101,15 @@ struct EffectRenderingTests {
         let darker = try await meanLuma(ev: -2)
         let brighter = try await meanLuma(ev: 1)
         #expect(darker < base - 20, "ev -2 should darken: base \(base), got \(darker)")
-        // Saturated pattern has little headroom above 255; +1 EV yields a small gain.
-        #expect(brighter > base + 2, "ev +1 should brighten: base \(base), got \(brighter)")
+        #expect(brighter > base + 20, "ev +1 should brighten: base \(base), got \(brighter)")
     }
 
     /// Every catalog effect renders without crashing and (with non-default params)
     /// actually changes pixels. Catches broken filter names/keys as the catalog grows.
     @Test func everyCatalogEffectRendersAndChangesPixels() async throws {
         let renderSize = CompositorFixtures.renderSize
-        let videoURL = try await CompositorFixtures.patternVideoURL()
-        nonisolated(unsafe) let urls = ["pattern": videoURL]
+        let videoURL = try await CompositorFixtures.midtoneVideoURL()
+        nonisolated(unsafe) let urls = ["midtone": videoURL]
 
         let nonDefault: [String: [String: Double]] = [
             "color.exposure": ["ev": -2],
@@ -126,7 +125,7 @@ struct EffectRenderingTests {
         ]
 
         func frame(_ effects: [Effect]?) async throws -> [UInt8] {
-            var clip = CompositorFixtures.patternClip()
+            var clip = CompositorFixtures.midtoneClip()
             clip.effects = effects
             let tl = CompositorFixtures.timeline([Fixtures.videoTrack(clips: [clip])])
             let result = try await CompositionBuilder.build(
@@ -140,9 +139,8 @@ struct EffectRenderingTests {
             return ColorProbeHelpers.srgbBytes(cg, size: renderSize)
         }
 
-        // Vibrance protects already-saturated colors by design, so it's a no-op on the
-        // fully-saturated test pattern — still render it (catches a bad filter key) but
-        // don't assert a pixel change.
+        // Vibrance's delta is the least predictable across renderers, so render it
+        // (catches a bad filter key) but don't assert a pixel change.
         let noOpOnSaturated: Set<String> = ["color.vibrance"]
         let base = try await frame(nil)
         for descriptor in EffectRegistry.all where descriptor.resourceKey == nil {
