@@ -48,22 +48,55 @@ final class ModelCatalog {
         guard !didConfigure else { return }
         didConfigure = true
 
-        guard let client = AccountService.shared.convex else { return }
+        let jsonString = """
+        [
+          {
+            "id": "ltx-video",
+            "kind": "video",
+            "displayName": "LTX-Video (Local)",
+            "allowedEndpoints": [],
+            "responseShape": "video",
+            "uiCapabilities": {
+              "durations": [5, 10],
+              "resolutions": ["768x512"],
+              "aspectRatios": ["16:9"],
+              "supportsFirstFrame": true,
+              "supportsLastFrame": true,
+              "maxReferenceImages": 5,
+              "maxReferenceVideos": 1,
+              "maxReferenceAudios": 1,
+              "maxTotalReferences": 5,
+              "maxCombinedVideoRefSeconds": 15.0,
+              "maxCombinedAudioRefSeconds": 30.0,
+              "framesAndReferencesExclusive": false,
+              "referenceTagNoun": "ref",
+              "requiresSourceVideo": false,
+              "requiresReferenceImage": false
+            }
+          },
+          {
+            "id": "sd-local",
+            "kind": "image",
+            "displayName": "Dreamshaper (Local)",
+            "allowedEndpoints": [],
+            "responseShape": "images",
+            "uiCapabilities": {
+              "resolutions": ["768x512"],
+              "aspectRatios": ["16:9"],
+              "qualities": ["standard"],
+              "supportsImageReference": true,
+              "maxImages": 1
+            }
+          }
+        ]
+        """
 
-        subscription = client
-            .subscribe(to: "models:list", yielding: [CatalogEntry].self)
-            .receive(on: DispatchQueue.main)
-            .sink(
-                receiveCompletion: { [weak self] completion in
-                    if case .failure(let err) = completion {
-                        Log.generation.error("ModelCatalog subscription failed: \(err.localizedDescription)")
-                        self?.lastError = err.localizedDescription
-                    }
-                },
-                receiveValue: { [weak self] entries in
-                    self?.apply(entries)
-                }
-            )
+        if let data = jsonString.data(using: .utf8),
+           let entries = try? JSONDecoder().decode([CatalogEntry].self, from: data) {
+            apply(entries)
+        } else {
+            Log.generation.error("ModelCatalog failed to parse static models")
+        }
     }
 
     private func apply(_ entries: [CatalogEntry]) {

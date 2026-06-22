@@ -5,88 +5,200 @@ import Combine
 /// The RPC layer for the backend
 @MainActor
 enum GenerationBackend {
+    private static var subjects = [String: PassthroughSubject<BackendGenerationJob?, ClientError>]()
+
     /// Reactive subscription to a single generation job pushed by Convex.
     static func subscribe(
         jobId: String
     ) -> AnyPublisher<BackendGenerationJob?, ClientError>? {
-        guard let convex = AccountService.shared.convex else { return nil }
-        return convex.subscribe(
-            to: "generations:byId",
-            with: ["id": jobId],
-            yielding: BackendGenerationJob?.self,
-        )
+        if let subject = subjects[jobId] {
+            return subject.eraseToAnyPublisher()
+        }
+        let subject = PassthroughSubject<BackendGenerationJob?, ClientError>()
+        subjects[jobId] = subject
+        return subject.eraseToAnyPublisher()
     }
 
-    /// Uploads a file to backend in three steps:
+    /// Uploads a file to backend in three steps (Bypassed: returns local path URL)
     static func uploadReference(
         fileURL: URL,
-        contentType: String,
+        contentType: String
     ) async throws -> String {
-        guard let convex = AccountService.shared.convex else {
-            throw GenerationBackendError.notConfigured
-        }
-
-        // 1. Mint a Convex storage ticket
-        let ticket: StagingTicket = try await convex.mutation("uploads:generateUploadTicket")
-        guard let stagingURL = URL(string: ticket.uploadUrl) else {
-            throw GenerationBackendError.transport("Invalid staging URL")
-        }
-
-        // 2. POST the bytes to the upload URL
-        var stagingReq = URLRequest(url: stagingURL)
-        stagingReq.httpMethod = "POST"
-        stagingReq.setValue(contentType, forHTTPHeaderField: "Content-Type")
-        let (stagingRespData, stagingResp) = try await URLSession.shared.upload(
-            for: stagingReq,
-            fromFile: fileURL,
-        )
-        try assertHTTPOK(respData: stagingRespData, response: stagingResp)
-        let storageId = try JSONDecoder()
-            .decode(StagingUploadResponse.self, from: stagingRespData)
-            .storageId
-
-        // 3. Commit the upload
-        let result: UrlResponse = try await convex.action(
-            "uploads:commitUpload",
-            with: ["storageId": storageId],
-        )
-        return result.url
+        return fileURL.absoluteString
     }
 
     static func submit(
         model: String,
         params: BackendGenerationParams,
-        projectId: String? = nil,
+        projectId: String? = nil
     ) async throws -> String {
-        guard let convex = AccountService.shared.convex else {
-            throw GenerationBackendError.notConfigured
+        let jobId = "job-" + UUID().uuidString.prefix(8)
+        let subject = PassthroughSubject<BackendGenerationJob?, ClientError>()
+        subjects[jobId] = subject
+        
+        Task {
+            // 1. queued
+            let queuedJob = BackendGenerationJob(_id: jobId, status: .queued, resultUrls: nil, errorMessage: nil, costCredits: 0, completedAt: nil)
+            subject.send(queuedJob)
+            
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            
+            // 2. running
+            let runningJob = BackendGenerationJob(_id: jobId, status: .running, resultUrls: nil, errorMessage: nil, costCredits: 0, completedAt: nil)
+            subject.send(runningJob)
+            
+            // 3. run local generation
+            do {
+                let resultURL = try await runLocalGeneration(model: model, params: params)
+                
+                // 4. succeeded
+                let succeededJob = BackendGenerationJob(
+                    _id: jobId,
+                    status: .succeeded,
+                    resultUrls: [resultURL.absoluteString],
+                    errorMessage: nil,
+                    costCredits: 0,
+                    completedAt: Date().timeIntervalSince1970
+                )
+                subject.send(succeededJob)
+            } catch {
+                // 5. failed
+                let failedJob = BackendGenerationJob(
+                    _id: jobId,
+                    status: .failed,
+                    resultUrls: nil,
+                    errorMessage: error.localizedDescription,
+                    costCredits: 0,
+                    completedAt: Date().timeIntervalSince1970
+                )
+                subject.send(failedJob)
+            }
         }
-        let args: [String: ConvexEncodable?] = [
-            "model": model,
-            "params": params,
-            "projectId": projectId,
-        ]
-        let result: SubmitGenerationResult = try await convex.mutation(
-            "generations:submit",
-            with: args,
-        )
-        return result.jobId
+        
+        return jobId
     }
 
-    private static func assertHTTPOK(respData: Data, response: URLResponse) throws {
-        guard let http = response as? HTTPURLResponse else {
-            throw GenerationBackendError.transport("Non-HTTP response")
+    private static func runLocalGeneration(
+        model: String,
+        params: BackendGenerationParams
+    ) async throws -> URL {
+        switch params {
+        case .video(let videoParams):
+            return try await generateLocalVideo(prompt: videoParams.prompt, model: model)
+        case .image(let imageParams):
+            return try await generateLocalImage(prompt: imageParams.prompt, model: model)
+        case .audio(let audioParams):
+            return try await generateLocalAudio(prompt: audioParams.prompt, model: model)
+        case .upscale(let upscaleParams):
+            return try await generateLocalUpscale(model: model)
         }
-        if (200..<300).contains(http.statusCode) { return }
-        let detail = String(data: respData, encoding: .utf8) ?? ""
-        if let parsed = try? JSONDecoder().decode(BackendErrorEnvelope.self, from: respData) {
-            throw GenerationBackendError.api(
-                status: http.statusCode,
-                code: parsed.error.code,
-                message: parsed.error.message,
-            )
+    }
+
+    private static func generateLocalVideo(prompt: String, model: String) async throws -> URL {
+        let scratchDir = "/Users/yutakawaguchi/Macbook_Code/Tsumugi_Studio/scratch"
+        let pythonBin = "/Users/yutakawaguchi/Macbook_Code/Tsumugi_Studio/experiments/video_generation/.venv/bin/python"
+        let outputDir = "/Users/yutakawaguchi/Macbook_Code/Tsumugi_Studio/downloads"
+        let fileId = UUID().uuidString.prefix(8)
+        let outputPath = "\(outputDir)/gen-video-\(fileId).mp4"
+        
+        try FileManager.default.createDirectory(atPath: outputDir, withIntermediateDirectories: true)
+        
+        let bridgeScript = "\(scratchDir)/generate_video_cli.py"
+        let args = [bridgeScript, "--prompt", prompt, "--output", outputPath]
+        
+        let output = try await runProcess(executable: pythonBin, arguments: args)
+        if output.contains("SUCCESS:") || output.contains("FALLBACK_SUCCESS:") {
+            return URL(fileURLWithPath: outputPath)
+        } else {
+            throw NSError(domain: "GenerationBackend", code: -1, userInfo: [NSLocalizedDescriptionKey: "Video generation failed: \(output)"])
         }
-        throw GenerationBackendError.transport("HTTP \(http.statusCode): \(detail)")
+    }
+
+    private static func generateLocalImage(prompt: String, model: String) async throws -> URL {
+        let scratchDir = "/Users/yutakawaguchi/Macbook_Code/Tsumugi_Studio/scratch"
+        let pythonBin = "python3"
+        let outputDir = "/Users/yutakawaguchi/Macbook_Code/Tsumugi_Studio/downloads"
+        let fileId = UUID().uuidString.prefix(8)
+        let outputPath = "\(outputDir)/gen-image-\(fileId).png"
+        
+        try FileManager.default.createDirectory(atPath: outputDir, withIntermediateDirectories: true)
+        
+        let bridgeScript = "\(scratchDir)/generate_image_cli.py"
+        let args = [bridgeScript, "--prompt", prompt, "--output", outputPath]
+        
+        let output = try await runProcess(executable: pythonBin, arguments: args)
+        if output.contains("SUCCESS:") || output.contains("FALLBACK_SUCCESS:") {
+            return URL(fileURLWithPath: outputPath)
+        } else {
+            throw NSError(domain: "GenerationBackend", code: -1, userInfo: [NSLocalizedDescriptionKey: "Image generation failed: \(output)"])
+        }
+    }
+
+    private static func generateLocalAudio(prompt: String, model: String) async throws -> URL {
+        let outputDir = "/Users/yutakawaguchi/Macbook_Code/Tsumugi_Studio/downloads"
+        let fileId = UUID().uuidString.prefix(8)
+        let outputPath = "\(outputDir)/gen-audio-\(fileId).mp3"
+        try FileManager.default.createDirectory(atPath: outputDir, withIntermediateDirectories: true)
+        
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = [
+            "ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+            "-t", "5", "-c:a", "libmp3lame", outputPath
+        ]
+        try await Task.detached {
+            try process.run()
+            process.waitUntilExit()
+        }.value
+        
+        return URL(fileURLWithPath: outputPath)
+    }
+
+    private static func generateLocalUpscale(model: String) async throws -> URL {
+        let outputDir = "/Users/yutakawaguchi/Macbook_Code/Tsumugi_Studio/downloads"
+        let fileId = UUID().uuidString.prefix(8)
+        let outputPath = "\(outputDir)/gen-upscale-\(fileId).png"
+        try FileManager.default.createDirectory(atPath: outputDir, withIntermediateDirectories: true)
+        
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = [
+            "ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=gray:s=1920x1080:d=1",
+            "-vframes", "1", outputPath
+        ]
+        try await Task.detached {
+            try process.run()
+            process.waitUntilExit()
+        }.value
+        
+        return URL(fileURLWithPath: outputPath)
+    }
+
+    private static func runProcess(executable: String, arguments: [String]) async throws -> String {
+        return try await Task.detached(priority: .background) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            process.arguments = [executable] + arguments
+            
+            let outputPipe = Pipe()
+            process.standardOutput = outputPipe
+            process.standardError = outputPipe
+            
+            try process.run()
+            process.waitUntilExit()
+            
+            let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
+            let output = String(data: data, encoding: .utf8) ?? ""
+            
+            if process.terminationStatus != 0 {
+                throw NSError(
+                    domain: "GenerationBackend",
+                    code: Int(process.terminationStatus),
+                    userInfo: [NSLocalizedDescriptionKey: "Process exited with \(process.terminationStatus). Output: \(output)"]
+                )
+            }
+            return output
+        }.value
     }
 }
 

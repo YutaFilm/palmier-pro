@@ -17,6 +17,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppNotifications.configure()
 
         AppState.shared.startMCPService()
+
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            if AppState.shared.activeProject == nil {
+                let registry = ProjectRegistry.shared
+                if let latest = registry.sortedEntries.first(where: { $0.isAccessible }) {
+                    AppState.shared.openProject(at: latest.url)
+                } else {
+                    let defaultURL = Project.storageDirectory.appendingPathComponent("tsumugi_project.palmier")
+                    let doc = VideoProject()
+                    doc.fileURL = defaultURL
+                    doc.fileType = VideoProject.typeIdentifier
+                    doc.makeWindowControllers()
+                    doc.showWindows()
+                    NSDocumentController.shared.addDocument(doc)
+                    doc.save(to: defaultURL, ofType: VideoProject.typeIdentifier, for: .saveOperation) { _ in
+                        ProjectRegistry.shared.register(defaultURL)
+                    }
+                }
+            }
+        }
     }
 
     func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool {
