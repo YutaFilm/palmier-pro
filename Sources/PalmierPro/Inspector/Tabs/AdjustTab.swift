@@ -1,4 +1,6 @@
+import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 extension InspectorView {
 
@@ -45,6 +47,7 @@ extension InspectorView {
             EffectControl(effectId: "blur.gaussian", paramKey: "radius", label: "Blur"),
             EffectControl(effectId: "blur.sharpen", paramKey: "amount", label: "Sharpen"),
             EffectControl(effectId: "stylize.vignette", paramKey: "intensity", label: "Vignette"),
+            EffectControl(effectId: "stylize.glow", paramKey: "intensity", label: "Glow"),
         ]
     }
 
@@ -52,7 +55,7 @@ extension InspectorView {
     private var alwaysOnEffectOrder: [String] {
         ["color.exposure", "color.contrast", "color.highlightsShadows", "color.blacksWhites",
          "color.temperature", "color.vibrance", "color.saturation", "color.wheels", "color.curves",
-         "blur.gaussian", "blur.sharpen", "stylize.vignette"]
+         "color.lut", "blur.gaussian", "blur.sharpen", "stylize.vignette", "stylize.glow"]
     }
 
     @ViewBuilder
@@ -70,6 +73,7 @@ extension InspectorView {
             case .color:
                 curvesSection(clips: clips)
                 wheelsSection(clips: clips)
+                lutSection(clips: clips)
             case .effects:
                 adjustmentSection(title: "Effects", controls: stylizeControls, clips: clips)
             }
@@ -219,6 +223,142 @@ extension InspectorView {
         }
         if commit {
             commitEffects(clips, actionName: "Adjust \(prefix.capitalized)", mutate)
+        } else {
+            applyEffects(clips, mutate)
+        }
+    }
+
+    // MARK: LUT
+
+    @ViewBuilder
+    private func lutSection(clips: [Clip]) -> some View {
+        let path = lutPath(in: clips)
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+            HStack(spacing: AppTheme.Spacing.xs) {
+                sectionTitleLabel(title: "LUT")
+                Spacer()
+                if path != nil {
+                    HoldToPreviewButton(
+                        onPress: { previewSection(["color.lut"], clips: clips, enabled: false) },
+                        onRelease: { previewSection(["color.lut"], clips: clips, enabled: true) }
+                    )
+                    resetButton(
+                        onReset: { clearLUT(clips: clips) },
+                        help: "Remove LUT"
+                    )
+                }
+            }
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+                lutFileRow(path: path, clips: clips)
+                if path != nil { lutIntensityRow(clips: clips) }
+            }
+            .padding(.leading, sectionContentIndent)
+        }
+    }
+
+    private func lutFileRow(path: String?, clips: [Clip]) -> some View {
+        HStack(spacing: AppTheme.Spacing.sm) {
+            Text("File")
+                .font(.system(size: AppTheme.FontSize.sm))
+                .foregroundStyle(AppTheme.Text.secondaryColor)
+                .frame(width: AppTheme.Slider.labelColumn, alignment: .leading)
+            Button { chooseLUT(clips: clips) } label: {
+                HStack(spacing: AppTheme.Spacing.xs) {
+                    Image(systemName: "square.stack.3d.up")
+                        .font(.system(size: AppTheme.FontSize.xs))
+                        .foregroundStyle(AppTheme.Text.tertiaryColor)
+                    Text(path.map { ($0 as NSString).lastPathComponent } ?? "Choose…")
+                        .font(.system(size: AppTheme.FontSize.sm))
+                        .foregroundStyle(path == nil ? AppTheme.Text.tertiaryColor : AppTheme.Text.primaryColor)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, AppTheme.Spacing.smMd)
+                .padding(.vertical, AppTheme.Spacing.xs)
+                .frame(maxWidth: .infinity)
+                .background(
+                    RoundedRectangle(cornerRadius: AppTheme.Radius.sm)
+                        .fill(Color.white.opacity(AppTheme.Opacity.hint))
+                )
+            }
+            .buttonStyle(.plain)
+            .help(path ?? "Choose a .cube LUT file")
+        }
+        .frame(height: KeyframesMetrics.rowHeight)
+    }
+
+    private func lutIntensityRow(clips: [Clip]) -> some View {
+        let spec = EffectRegistry.descriptor(id: "color.lut")?.params.first { $0.key == "intensity" }
+        let range = spec?.range ?? 0...1
+        let value = lutIntensity(in: clips)
+        return HStack(spacing: AppTheme.Spacing.sm) {
+            Text("Intensity")
+                .font(.system(size: AppTheme.FontSize.sm))
+                .foregroundStyle(AppTheme.Text.secondaryColor)
+                .lineLimit(1)
+                .frame(width: AppTheme.Slider.labelColumn, alignment: .leading)
+            AdjustSlider(
+                value: value, range: range, defaultValue: spec?.defaultValue ?? 1,
+                onChanged: { setLUTIntensity($0, clips: clips, commit: false) },
+                onCommit: { setLUTIntensity($0, clips: clips, commit: true) }
+            )
+            ScrubbableNumberField(
+                value: value, range: range, displayMultiplier: 100, format: "%.0f",
+                valueSuffix: "%", dragSensitivity: 0.5, fieldWidth: 50,
+                onChanged: { setLUTIntensity($0 / 100, clips: clips, commit: false) }
+            ) { setLUTIntensity($0 / 100, clips: clips, commit: true) }
+        }
+        .frame(height: KeyframesMetrics.rowHeight)
+    }
+
+    private func lutPath(in clips: [Clip]) -> String? {
+        (clips.first?.effects ?? []).first { $0.type == "color.lut" }?.params["path"]?.string
+    }
+
+    private func lutIntensity(in clips: [Clip]) -> Double {
+        (clips.first?.effects ?? []).first { $0.type == "color.lut" }?
+            .params["intensity"]?.resolved(at: 0, default: 1) ?? 1
+    }
+
+    private func chooseLUT(clips: [Clip]) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose a .cube LUT file"
+        if let cube = UTType(filenameExtension: "cube") { panel.allowedContentTypes = [cube] }
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            setLUTPath(url.path, clips: clips)
+        }
+    }
+
+    private func setLUTPath(_ path: String, clips: [Clip]) {
+        commitEffects(clips, actionName: "Apply LUT") { effects in
+            if let i = effects.firstIndex(where: { $0.type == "color.lut" }) {
+                effects[i].params["path"] = EffectParam(string: path)
+            } else {
+                var effect = Effect(type: "color.lut")
+                effect.params["path"] = EffectParam(string: path)
+                effects.insert(effect, at: alwaysOnInsertIndex(effects, for: "color.lut"))
+            }
+        }
+    }
+
+    private func clearLUT(clips: [Clip]) {
+        commitEffects(clips, actionName: "Remove LUT") { effects in
+            effects.removeAll { $0.type == "color.lut" }
+        }
+    }
+
+    private func setLUTIntensity(_ value: Double, clips: [Clip], commit: Bool) {
+        let mutate: (inout [Effect]) -> Void = { effects in
+            guard let i = effects.firstIndex(where: { $0.type == "color.lut" }) else { return }
+            effects[i].params["intensity"] = EffectParam(value: value)
+        }
+        if commit {
+            commitEffects(clips, actionName: "Change LUT Intensity", mutate)
         } else {
             applyEffects(clips, mutate)
         }
