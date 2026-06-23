@@ -34,6 +34,10 @@ if [ -f "$ROOT/$ENV_FILE" ]; then
 fi
 
 SIGNING_IDENTITY="${SIGNING_IDENTITY:-Developer ID Application: Palmier, Inc. (MMFLRC7562)}"
+if [ "$SIGNING_IDENTITY" != "-" ] && ! security find-identity -v -p codesigning | grep -q "$SIGNING_IDENTITY"; then
+  echo "==> Identity '$SIGNING_IDENTITY' not found in keychain. Falling back to ad-hoc signing (-)"
+  SIGNING_IDENTITY="-"
+fi
 NOTARY_PROFILE="${NOTARY_PROFILE:-palmier-notary}"
 SENTRY_DSN="${SENTRY_DSN:-}"
 PROVISION_PROFILE="${PROVISION_PROFILE:-$ROOT/scripts/Palmier_Pro_Developer_ID.provisionprofile}"
